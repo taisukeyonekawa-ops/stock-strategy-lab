@@ -252,6 +252,7 @@ latest = technicals.iloc[-1]
 plan = analysis["trade_plan"]
 per_forecast = analysis["per_forecast"]
 news = analysis["news"]
+best_practices = analysis["best_practices"]
 
 st.subheader(f"{fundamentals['name']} ({analysis['ticker']})")
 score_col, price_col, tech_col, fund_col = st.columns(4)
@@ -376,8 +377,10 @@ with story_col2:
 
 st.subheader("最新ニュース")
 if not news:
-    st.info("ニュースを取得できませんでした。ネットワーク状況やYahoo Finance側の配信状況を確認してください。")
+    st.info("日本語ニュースを取得できませんでした。ネットワーク状況やニュース配信状況を確認してください。")
 else:
+    news_source = news[0].get("source", "ニュース")
+    st.caption(f"{news_source}を優先表示しています。日本語ニュースが取得できない場合のみYahoo Financeにフォールバックします。")
     for article in news:
         title = article["title"]
         publisher = article["publisher"]
@@ -391,6 +394,32 @@ else:
         st.caption(f"{publisher} / {published_at}")
         if summary:
             st.write(summary)
+
+st.subheader("調査済みベストプラクティス")
+bp_tabs = st.tabs(["今回の確認", "ファンダメンタルズ", "テクニカル", "リスク管理"])
+with bp_tabs[0]:
+    bp_col1, bp_col2, bp_col3 = st.columns(3)
+    with bp_col1:
+        st.markdown("**強み**")
+        for item in best_practices["strengths"] or ["明確な強みはまだ限定的です。"]:
+            st.write(f"- {item}")
+    with bp_col2:
+        st.markdown("**注意点**")
+        for item in best_practices["cautions"] or ["大きな注意点は検出されていません。"]:
+            st.write(f"- {item}")
+    with bp_col3:
+        st.markdown("**次の確認**")
+        for item in best_practices["actions"]:
+            st.write(f"- {item}")
+with bp_tabs[1]:
+    for item in best_practices["fundamental"]:
+        st.write(f"- {item}")
+with bp_tabs[2]:
+    for item in best_practices["technical"]:
+        st.write(f"- {item}")
+with bp_tabs[3]:
+    for item in best_practices["risk"]:
+        st.write(f"- {item}")
 
 with st.expander("運用ルール"):
     st.write("- 投資ストーリーを組み立て、ストーリーが崩れたら売る")
