@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from html import unescape
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
+from urllib.request import Request, urlopen
+import re
+import xml.etree.ElementTree as ET
 
 import pandas as pd
 import yfinance as yf
@@ -24,6 +30,25 @@ HIGH_CONVICTION_THEMES = {
 TECHNICAL_SCORE_RANGE = (-4, 9)
 FUNDAMENTAL_SCORE_RANGE = (-4, 7)
 WATCHLIST_SCORE_RANGE = (0, 12)
+BEST_PRACTICES = {
+    "fundamental": [
+        "売上成長、利益成長、利益率、ROE、FCF、D/Eを同時に見て、単一指標だけで判断しない。",
+        "PERは業種差と成長率をセットで見る。2年後・3年後PERで、利益成長による割安化を確認する。",
+        "利益だけでなくキャッシュフローを確認し、会計上の利益と現金創出力のズレを警戒する。",
+        "会社要因だけでなく、セクター、金利、景気、競争環境、決算イベントも確認する。",
+    ],
+    "technical": [
+        "200日線で大きな地合い、50日線と21日EMAで中短期トレンドを確認する。",
+        "55日高値ブレイクや移動平均からの反発は、出来高増を伴う時だけ信頼度を上げる。",
+        "RSIは70超を過熱警戒、45から70をトレンド追随しやすい範囲として扱う。",
+        "ATRと直近安値から損切りを先に決め、2Rから3R以上を狙える時だけエントリーする。",
+    ],
+    "risk": [
+        "1回の損失許容を先に決め、ストップ価格から逆算してポジションサイズを決める。",
+        "ストップ注文は短期的な値振れで約定することがあり、急変時は指定価格と約定価格がずれる点に注意する。",
+        "ファンダメンタルズは中長期、テクニカルはタイミング確認として分担させる。",
+    ],
+}
 
 
 @dataclass(frozen=True)
@@ -118,7 +143,11 @@ def fetch_fundamentals(ticker: str) -> dict[str, Any]:
     }
 
 
-def fetch_company_news(ticker: str, limit: int = 10) -> list[dict[str, Any]]:
+def fetch_company_news(ticker: str, company_name: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+    japanese_news = fetch_japanese_company_news(ticker, company_name, limit)
+    if japanese_news:
+        return japanese_news
+
     try:
         raw_news = yf.Ticker(ticker).news or []
     except Exception:
@@ -144,10 +173,74 @@ def fetch_company_news(ticker: str, limit: int = 10) -> list[dict[str, Any]]:
                 "published_at": _format_news_time(published_at),
                 "url": link,
                 "summary": content.get("summary") or item.get("summary"),
+                "language": "en",
+                "source": "Yahoo Finance",
             }
         )
 
     return articles
+
+
+def fetch_japanese_company_news(
+    ticker: str,
+    company_name: str | None = None,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    search_terms = build_japanese_news_query(ticker, company_name)
+    url = (
+        "https://news.google.com/rss/search?"
+        f"q={quote_plus(search_terms)}&hl=ja&gl=JP&ceid=JP:ja"
+    )
+    request = Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 StockStrategyLab/1.0"},
+    )
+    try:
+        with urlopen(request, timeout=8) as response:
+            payload = response.read()
+    except Exception:
+        return []
+
+    try:
+        root = ET.fromstring(payload)
+    except ET.ParseError:
+        return []
+
+    articles: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in root.findall("./channel/item"):
+        title = _clean_news_text(item.findtext("title"))
+        link = item.findtext("link")
+        published_at = _format_news_time(item.findtext("pubDate"))
+        publisher = item.findtext("source") or "Googleニュース"
+        summary = _clean_news_text(item.findtext("description"))
+        if not title or title in seen:
+            continue
+        seen.add(title)
+        articles.append(
+            {
+                "title": title,
+                "publisher": publisher,
+                "published_at": published_at,
+                "url": link,
+                "summary": summary,
+                "language": "ja",
+                "source": "Google News 日本語",
+            }
+        )
+        if len(articles) >= limit:
+            break
+
+    return articles
+
+
+def build_japanese_news_query(ticker: str, company_name: str | None = None) -> str:
+    code = _normalize_ticker_code(ticker)
+    name = company_name or ticker
+    name = name.replace("Corporation", "").replace("Inc.", "").replace("Ltd.", "").strip()
+    if ticker.upper().endswith(".T"):
+        return f"{code} {name} 株価 決算"
+    return f"{ticker} {name} 株価 決算 日本語"
 
 
 def add_technical_indicators(data: pd.DataFrame) -> pd.DataFrame:
@@ -182,7 +275,7 @@ def build_analysis(ticker: str, period: str = "2y", risk_pct: float = 1.0) -> di
     technicals = add_technical_indicators(prices)
     latest_close = float(technicals.dropna(subset=["Close"]).iloc[-1]["Close"])
     fundamentals = fetch_fundamentals(ticker)
-    news = fetch_company_news(ticker)
+    news = fetch_company_news(ticker, fundamentals["name"])
     watchlist_profile = find_watchlist_profile(ticker)
     technical_raw, technical_reasons, technical_risks = score_technicals(technicals)
     fundamental_raw, fundamental_reasons, fundamental_risks = score_fundamentals(fundamentals)
@@ -221,6 +314,70 @@ def build_analysis(ticker: str, period: str = "2y", risk_pct: float = 1.0) -> di
         "per_forecast": per_forecast,
         "total_score": total_score,
         "trade_plan": plan,
+        "best_practices": build_best_practice_review(technicals, fundamentals, per_forecast),
+    }
+
+
+def build_best_practice_review(
+    technicals: pd.DataFrame,
+    fundamentals: dict[str, Any],
+    per_forecast: dict[str, Any],
+) -> dict[str, list[str]]:
+    latest = technicals.dropna(subset=["Close"]).iloc[-1]
+    merged_per = per_forecast["merged"]
+    strengths: list[str] = []
+    cautions: list[str] = []
+    actions: list[str] = []
+
+    if _gt(fundamentals.get("revenue_growth"), 0.1) and _gt(fundamentals.get("earnings_growth"), 0.1):
+        strengths.append("売上・利益がともに10%以上伸びており、成長株の基本条件を満たします。")
+    elif fundamentals.get("revenue_growth") is not None or fundamentals.get("earnings_growth") is not None:
+        cautions.append("売上または利益の伸びが10%未満です。成長ストーリーの強さを決算で確認してください。")
+    else:
+        cautions.append("売上成長率・利益成長率が取得できません。決算短信やIR資料で補完してください。")
+
+    if _gt(fundamentals.get("free_cashflow"), 0):
+        strengths.append("FCFがプラスで、利益の裏付けとなる現金創出力があります。")
+    elif fundamentals.get("free_cashflow") is not None:
+        cautions.append("FCFがマイナスです。投資フェーズなのか、収益性悪化なのかを切り分けてください。")
+
+    if _gt(fundamentals.get("debt_to_equity"), 150):
+        cautions.append("D/Eレシオが高く、金利上昇や景気悪化時の財務リスクを確認してください。")
+
+    if merged_per.get("year_3") is not None:
+        if merged_per["year_3"] <= 25:
+            strengths.append("3年後PERが25倍以下まで下がる見込みで、成長による割安化が見えます。")
+        else:
+            cautions.append("3年後PERが高めです。成長鈍化時はバリュエーション調整に注意してください。")
+
+    if pd.notna(latest["sma_200"]) and latest["Close"] > latest["sma_200"]:
+        strengths.append("株価が200日線を上回り、長期トレンドは上向きです。")
+    else:
+        cautions.append("200日線を明確に上回っていないため、トレンドフォローの優先度は下がります。")
+
+    if pd.notna(latest["rsi_14"]):
+        if 45 <= latest["rsi_14"] <= 70:
+            strengths.append("RSIが45から70の範囲で、過熱しすぎないトレンド追随ゾーンです。")
+        elif latest["rsi_14"] > 70:
+            cautions.append("RSIが70超で短期過熱です。ブレイク直後の飛びつきは避け、押し目や出来高確認を優先してください。")
+        elif latest["rsi_14"] < 35:
+            cautions.append("RSIが低く、反発待ちの局面です。落ちるナイフを拾わず、反転確認を待ってください。")
+
+    if pd.notna(latest["volume_sma_20"]) and latest["Volume"] > latest["volume_sma_20"] * 1.2:
+        strengths.append("出来高が20日平均を上回り、価格変化の信頼度が上がっています。")
+    else:
+        actions.append("高値ブレイク時は出来高が20日平均を上回るかを確認してください。")
+
+    actions.append("エントリー前に、損切り価格と1回の許容損失から株数を逆算してください。")
+    actions.append("2Rで一部利確し、残りは21日EMAまたは20日安値割れでトレーリング撤退してください。")
+
+    return {
+        "fundamental": BEST_PRACTICES["fundamental"],
+        "technical": BEST_PRACTICES["technical"],
+        "risk": BEST_PRACTICES["risk"],
+        "strengths": strengths[:6],
+        "cautions": cautions[:6],
+        "actions": actions[:6],
     }
 
 
@@ -885,11 +1042,25 @@ def _mean_available(*values: Any) -> float | None:
     return sum(numbers) / len(numbers)
 
 
+def _clean_news_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = unescape(str(value))
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or None
+
+
 def _format_news_time(value: Any) -> str:
     if value is None:
         return "N/A"
     if isinstance(value, (int, float)):
         return datetime.fromtimestamp(value, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     if isinstance(value, str):
+        try:
+            parsed = parsedate_to_datetime(value)
+            return parsed.strftime("%Y-%m-%d %H:%M %Z")
+        except (TypeError, ValueError):
+            pass
         return value
     return str(value)
