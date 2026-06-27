@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import streamlit as st
 
 from src.stock_analysis import build_analysis, run_backtest
+from src.stock_list import add_stock_row, load_stock_list, refresh_stock_rows, remove_stock_rows, save_stock_list, sort_stock_list
 
 
 st.set_page_config(page_title="Stock Strategy Lab", layout="wide")
@@ -215,6 +216,98 @@ def render_price_chart(analysis: dict) -> None:
     st.pyplot(fig)
 
 
+def render_stock_list_manager() -> None:
+    st.subheader("銘柄一覧管理")
+    st.caption("銘柄はローカルCSVで管理します。保存、最新化、削除はそれぞれ明示操作です。")
+
+    frame = load_stock_list()
+    latest_update = frame["updated_at"].dropna().sort_values().iloc[-1] if not frame.empty and frame["updated_at"].notna().any() else "N/A"
+    summary_col1, summary_col2, summary_col3 = st.columns(3)
+    summary_col1.metric("登録銘柄", str(len(frame)))
+    summary_col2.metric("最終更新", latest_update)
+    summary_col3.metric("空欄数", str(int(frame.isna().sum().sum())) if not frame.empty else "0")
+
+    sort_options = {
+        "銘柄名": "name",
+        "銘柄コード": "code",
+        "現在の株価": "current_price",
+        "夜間PTS": "pts_price",
+        "売上高（今期）": "revenue_current",
+        "売上高（来期）": "revenue_next",
+        "純利益（今期）": "profit_current",
+        "純利益（来期）": "profit_next",
+        "EPS（今期予想）": "eps_current",
+        "EPS（来期予想）": "eps_next",
+        "EPS（再来期予想）": "eps_next2",
+        "PER（今期予想）": "per_current",
+        "PER（来期予想）": "per_next",
+        "PER（再来期予想）": "per_next2",
+        "RSI": "rsi",
+        "更新日時": "updated_at",
+    }
+
+    control_col1, control_col2, control_col3 = st.columns([1.2, 0.8, 1.2])
+    sort_label = control_col1.selectbox("並び替え", list(sort_options.keys()), index=2)
+    ascending = control_col2.radio("順序", ["昇順", "降順"], horizontal=True, index=1) == "昇順"
+    selected_codes = control_col3.multiselect("操作対象", options=frame["code"].tolist(), default=[])
+
+    sorted_frame = sort_stock_list(frame, sort_options[sort_label], ascending=ascending)
+    edited_frame = st.data_editor(
+        sorted_frame,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        disabled=["code", "updated_at"],
+        key="stock_list_editor",
+    )
+
+    action_col1, action_col2, action_col3 = st.columns(3)
+    if action_col1.button("変更を保存", type="primary"):
+        save_stock_list(edited_frame)
+        st.success("一覧を保存しました。")
+        st.rerun()
+
+    if action_col2.button("選択を最新化"):
+        if not selected_codes:
+            st.warning("最新化する銘柄を選んでください。")
+        else:
+            refreshed = refresh_stock_rows(edited_frame, selected_codes)
+            save_stock_list(refreshed)
+            st.success("選択した銘柄を最新化しました。")
+            st.rerun()
+
+    if action_col3.button("全件を最新化"):
+        refreshed = refresh_stock_rows(edited_frame, None)
+        save_stock_list(refreshed)
+        st.success("全銘柄を最新化しました。")
+        st.rerun()
+
+    delete_confirm = st.checkbox("削除対象の削除を確認しました", value=False)
+    if st.button("選択を削除", disabled=not delete_confirm):
+        if not selected_codes:
+            st.warning("削除対象を選んでください。")
+        else:
+            remaining = remove_stock_rows(edited_frame, selected_codes)
+            save_stock_list(remaining)
+            st.success("選択した銘柄を削除しました。")
+            st.rerun()
+
+    with st.expander("銘柄を追加", expanded=False):
+        with st.form("add_stock_form", clear_on_submit=True):
+            add_code = st.text_input("銘柄コード", placeholder="7203.T / AAPL / 421A")
+            add_name = st.text_input("銘柄名", placeholder="任意")
+            add_memo = st.text_input("メモ", placeholder="任意")
+            submitted = st.form_submit_button("追加して保存", type="primary")
+            if submitted:
+                try:
+                    updated = add_stock_row(edited_frame, add_code, add_name or None, add_memo or None)
+                    save_stock_list(updated)
+                    st.success("銘柄を追加しました。")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"追加できませんでした: {exc}")
+
+
 st.markdown(
     """
     <div class="hero">
@@ -238,6 +331,8 @@ with st.sidebar:
         ),
     )
     st.button("分析する", type="primary")
+
+render_stock_list_manager()
 
 try:
     with st.spinner("株価とファンダメンタルズを取得しています..."):
