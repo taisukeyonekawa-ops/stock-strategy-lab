@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+
+# Environment files
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Dependencies
+node_modules/
+.venv/
+venv/
+
+# Build outputs
+dist/
+build/
+.next/
+
+# Project outputs
+data/raw/
+reports/*.csv
+reports/*.png
+reports/*.html
+
+# Cache
+.cache/
+Library/
+__pycache__/
+*.pyc
+
+# Editor
+.idea/
+.vscode/
