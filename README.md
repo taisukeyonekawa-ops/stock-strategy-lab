@@ -1,2 +1,115 @@
-# stock-strategy-lab
-Streamlit stock strategy analysis app with technical, fundamental, watchlist, news, and backtesting views.
+# Stock
+
+株価分析用の作業プロジェクトです。
+
+## できること
+
+- Yahoo Finance から株価データを取得
+- 移動平均、日次リターン、累積リターンを計算
+- CSV とチャート画像を `reports/` に出力
+
+## 初期設定
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## サンプル実行
+
+```bash
+python src/analyze_stock.py --ticker AAPL --period 1y
+```
+
+日本株は `.T` を付けます。
+
+```bash
+python src/analyze_stock.py --ticker 7203.T --period 1y
+```
+
+## アプリ起動
+
+```bash
+streamlit run app.py
+```
+
+アプリでは、ファンダメンタルズとテクニカルの両面から、トレンド追随型のエントリー、損切り、利確、トレーリング出口を確認できます。
+
+## ブラウザで使う方法
+
+ローカルでは以下で起動できます。
+
+```bash
+source .venv/bin/activate
+streamlit run app.py
+```
+
+GitHubにアップロードして公開URLで使う場合は、Streamlit Community Cloudが一番簡単です。
+
+1. GitHubにこのプロジェクトをpush
+2. Streamlit Community CloudでGitHubリポジトリを選択
+3. Main file pathに `app.py` を指定
+4. Deploy
+
+必要な設定ファイルは以下です。
+
+- `requirements.txt`: Pythonライブラリ
+- `runtime.txt`: Pythonバージョン
+- `.streamlit/config.toml`: Streamlit設定
+
+APIキーは使っていないため、基本的にはSecrets設定なしで動きます。
+
+## 監視リスト観点
+
+`data/jp_watchlist.csv` に、日本株監視リストから読み取った評価観点を入れています。
+
+- 市場トレンド、テーマ
+- 来期売上成長率
+- 来期純利益成長率
+- 1期先EPS成長率
+- 1期先から3期先までの予想PER
+- 買うストーリー
+
+アプリでは、該当銘柄がある場合にこの観点を追加スコアとして反映します。
+
+## スコアとPER予測
+
+各スコアは100点満点で表示します。
+
+- テクニカル: 素点の最小 `-4`、最大 `9`
+- ファンダメンタルズ: 素点の最小 `-4`、最大 `7`
+- 監視リスト: 素点の最小 `0`、最大 `12`
+
+ファンダメンタルズでは、1年後PERに加えて2年後PER、3年後PERも表示します。監視リストに該当銘柄がある場合は監視リストの予想PERを優先し、ない場合はYahoo FinanceのEPSと成長率から概算します。
+
+現在は、監視リストに該当する銘柄でもYahoo FinanceのEPSと成長率から2年後・3年後PERを概算し、監視リストの予想PERと統合して表示します。
+
+## ストーリーとバックテスト
+
+アプリでは、監視リストの買うストーリー、テーマ、成長率、統合PER、テクニカルのエントリー条件をまとめて `Entry Story` として表示します。
+
+`Exit Story` では、初期損切り、一部利確、追加利確、トレーリング撤退、ストーリー崩れ時の撤退方針を表示します。
+
+バックテストは、価格データだけで再現できるテクニカル売買ルールに限定しています。ファンダメンタルズや監視リストの将来予想は、過去時点で利用できたとは限らないため、バックテストには入れていません。
+
+バックテストでは、ベース戦略に加えて以下の改善候補を比較します。
+
+- 出来高確認を入れる
+- RSI上限を70に絞る
+- 損切り幅を短くする
+- 利確目標を3Rに伸ばす
+- 出来高確認、RSI制限、短い損切りを組み合わせる
+
+比較結果から、平均損益、勝率、最大ドローダウン、取引数のバランスを見て改善メモを表示します。
+
+## 最新ニュース
+
+アプリでは、入力した銘柄についてYahoo Financeから取得できる最新ニュースを最大10件表示します。タイトル、配信元、日時、リンクを確認できます。
+
+## フォルダ構成
+
+- `src/`: 分析スクリプト
+- `data/`: 手元に保存する元データ
+- `reports/`: 分析結果、CSV、チャート
+- `.env.example`: 環境変数のサンプル
